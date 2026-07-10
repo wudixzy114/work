@@ -1,0 +1,65 @@
+@import 'tailwindcss';
+
+/*
+ * 设计基调：夜间仪表盘（instrument panel at night）。
+ * 深蓝黑底 = 静默；琥珀 amber = 活跃 Agent（警示灯语义：正在运行）；
+ * 青 cyan = 数据流动；等宽字体承载全部真实遥测数字。
+ * 所有动效仅由真实 WebSocket 状态驱动，无装饰性动画。
+ */
+@theme {
+  --color-panel-void: #070b14;
+  --color-panel-base: #0b1220;
+  --color-panel-raised: #111a2e;
+  --color-panel-line: #1e2b45;
+
+  --color-ink-bright: #e8eef7;
+  --color-ink-muted: #8a99b5;
+  --color-ink-faint: #4a5a7a;
+
+  --color-active: #f5a524; /* 琥珀：活跃 */
+  --color-active-dim: #7a5410;
+  --color-flow: #22d3ee; /* 青：数据流 */
+  --color-ok: #34d399;
+  --color-warn: #fb7185;
+
+  --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background-color: var(--color-panel-void);
+    color: var(--color-ink-bright);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  * {
+    box-sizing: border-box;
+  }
+}
+
+/* 活跃节点的呼吸光晕：仅当节点真实处于 active 时由类切换触发。 */
+@keyframes pulse-active {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--color-active), 0 0 18px -2px var(--color-active);
+  }
+  50% {
+    box-shadow: 0 0 0 1px var(--color-active), 0 0 32px 2px var(--color-active);
+  }
+}
+.node-active {
+  animation: pulse-active 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-active {
+    animation: none;
+    box-shadow: 0 0 0 1px var(--color-active), 0 0 20px -2px var(--color-active);
+  }
+}
