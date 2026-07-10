@@ -10,3 +10,6 @@ dist/
 *.db
 data/
 apps/web/src/components/ui/
+
+# build info
+*.tsbuildinfo

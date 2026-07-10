@@ -18,9 +18,12 @@
   "dependencies": {
     "@aiwf/orchestrator": "*",
     "@aiwf/shared": "*",
+    "better-sqlite3": "^12.11.1",
+    "nanoid": "^5.1.6",
     "node-cron": "^4.6.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node-cron": "^3.0.11"
   }
 }

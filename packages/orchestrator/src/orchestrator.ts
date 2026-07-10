@@ -45,6 +45,8 @@ export interface OrchestratorOptions {
   now?: () => number;
   /** 每当运行态推进时回调（用于向前端广播真实状态）。 */
   onRunState?: (state: RunState) => void;
+  /** 逐 token 输出回调（真实流式，用于前端实时渲染）。 */
+  onToken?: (runId: string, role: Role, delta: string) => void;
 }
 
 /**
@@ -56,12 +58,14 @@ export class Orchestrator {
   private readonly checkpointer: Checkpointer;
   private readonly now: () => number;
   private readonly onRunState?: (state: RunState) => void;
+  private readonly onToken?: (runId: string, role: Role, delta: string) => void;
 
   constructor(opts: OrchestratorOptions) {
     this.client = opts.client;
     this.checkpointer = createCheckpointer(opts.checkpointDbPath);
     this.now = opts.now ?? (() => Date.now());
     this.onRunState = opts.onRunState;
+    this.onToken = opts.onToken;
   }
 
   private compile(phase: Phase) {
@@ -72,6 +76,31 @@ export class Orchestrator {
 
   private config(runId: string): RunnableConfig {
     return { configurable: { thread_id: runId } };
+  }
+
+  /** 每个运行的中断控制器，用于 pause/stop 时打断流式推进。 */
+  private readonly aborters = new Map<string, AbortController>();
+
+  /** 中断某次运行的推进（checkpoint 已落地，可后续 resume）。 */
+  interrupt(runId: string): void {
+    this.aborters.get(runId)?.abort();
+    this.aborters.delete(runId);
+  }
+
+  /** 从最近 checkpoint 恢复推进（用于 pause 后 resume）。 */
+  async resume(runId: string, phase: Phase): Promise<RunState> {
+    const app = this.compile(phase);
+    const final = await this.streamRun(app, null, this.config(runId), runId);
+    const status: RunStatus = final.approved ? 'completed' : 'stopped';
+    const result = toRunState(
+      final,
+      status,
+      null,
+      await this.latestCheckpoint(runId),
+      this.now(),
+    );
+    this.onRunState?.(result);
+    return result;
   }
 
   /**
@@ -115,37 +144,54 @@ export class Orchestrator {
   ): Promise<OrchestratorStateType> {
     let last: OrchestratorStateType | null = null;
     let activeRole: Role | null = null;
-    const stream = await app.stream(initial, {
-      ...config,
-      streamMode: ['values', 'custom'],
-    });
-    for await (const [mode, data] of stream as AsyncIterable<[string, unknown]>) {
-      if (mode === 'custom') {
-        const signal = data as { active?: Role };
-        if (signal.active) {
-          activeRole = signal.active;
-          if (last) {
-            const nodes = last.nodes.map((n) =>
-              n.role === activeRole ? { ...n, status: 'active' as const } : n,
-            );
-            this.onRunState?.(
-              toRunState(
-                { ...last, nodes },
-                'running',
-                activeRole,
-                await this.latestCheckpoint(runId),
-                this.now(),
-              ),
-            );
+    const aborter = new AbortController();
+    this.aborters.set(runId, aborter);
+    try {
+      const stream = await app.stream(initial, {
+        ...config,
+        streamMode: ['values', 'custom'],
+        signal: aborter.signal,
+      });
+      for await (const [mode, data] of stream as AsyncIterable<[string, unknown]>) {
+        if (mode === 'custom') {
+          const signal = data as {
+            active?: Role;
+            token?: { role: Role; delta: string };
+          };
+          if (signal.token) {
+            this.onToken?.(runId, signal.token.role, signal.token.delta);
+            continue;
           }
+          if (signal.active) {
+            activeRole = signal.active;
+            if (last) {
+              const nodes = last.nodes.map((n) =>
+                n.role === activeRole ? { ...n, status: 'active' as const } : n,
+              );
+              this.onRunState?.(
+                toRunState(
+                  { ...last, nodes },
+                  'running',
+                  activeRole,
+                  await this.latestCheckpoint(runId),
+                  this.now(),
+                ),
+              );
+            }
+          }
+          continue;
         }
-        continue;
+        // values 模式：节点完成后的完整状态
+        last = data as OrchestratorStateType;
+        this.onRunState?.(
+          toRunState(last, 'running', null, await this.latestCheckpoint(runId), this.now()),
+        );
       }
-      // values 模式：节点完成后的完整状态
-      last = data as OrchestratorStateType;
-      this.onRunState?.(
-        toRunState(last, 'running', null, await this.latestCheckpoint(runId), this.now()),
-      );
+    } catch (err) {
+      // 中断（pause/stop）会抛 AbortError；此时 checkpoint 已落地，静默返回当前状态。
+      if (!aborter.signal.aborted) throw err;
+    } finally {
+      if (this.aborters.get(runId) === aborter) this.aborters.delete(runId);
     }
     return last ?? (await this.currentState(runId));
   }

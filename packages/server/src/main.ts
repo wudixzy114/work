@@ -12,6 +12,8 @@ async function main(): Promise<void> {
   const app = await buildServer({
     monitorDbPath: resolve(dataDir, 'monitor.sqlite'),
     checkpointDbPath: resolve(dataDir, 'checkpoints.sqlite'),
+    channelDbPath: resolve(dataDir, 'channels.sqlite'),
+    scheduleDbPath: resolve(dataDir, 'schedules.sqlite'),
   });
   await app.listen({ port: PORT, host: HOST });
 }

@@ -1,6 +1,6 @@
 import type { Channel } from '@aiwf/shared';
 import type { ChatRequest, ChatResponse } from '../types.js';
-import type { ProtocolTransformer } from './transformer.js';
+import type { ProtocolTransformer, StreamChunk } from './transformer.js';
 
 interface AnthropicContentBlock {
   type?: string;
@@ -14,6 +14,14 @@ interface AnthropicUsage {
 interface AnthropicResponse {
   model?: string;
   content?: AnthropicContentBlock[];
+  usage?: AnthropicUsage;
+}
+
+/** 流式事件的部分结构（content_block_delta / message_start / message_delta）。 */
+interface AnthropicStreamEvent {
+  type?: string;
+  delta?: { text?: string };
+  message?: { usage?: AnthropicUsage };
   usage?: AnthropicUsage;
 }
 
@@ -52,6 +60,14 @@ export class AnthropicTransformer implements ProtocolTransformer {
     };
   }
 
+  buildStreamRequest(channel: Channel, req: ChatRequest, resolvedModel: string) {
+    const base = this.buildRequest(channel, req, resolvedModel);
+    return {
+      ...base,
+      body: { ...(base.body as Record<string, unknown>), stream: true },
+    };
+  }
+
   parseResponse(raw: unknown, resolvedModel: string): ChatResponse {
     const res = raw as AnthropicResponse;
     const text = (res.content ?? [])
@@ -72,4 +88,33 @@ export class AnthropicTransformer implements ProtocolTransformer {
       },
     };
   }
+
+  parseStreamEvent(eventData: string): StreamChunk | null {
+    let ev: AnthropicStreamEvent;
+    try {
+      ev = JSON.parse(eventData) as AnthropicStreamEvent;
+    } catch {
+      return null;
+    }
+    // 文本增量
+    if (ev.type === 'content_block_delta' && ev.delta?.text) {
+      return { delta: ev.delta.text };
+    }
+    // 起始用量（含输入 token）
+    if (ev.type === 'message_start' && ev.message?.usage) {
+      const u = ev.message.usage;
+      return {
+        usage: {
+          promptTokens: u.input_tokens ?? 0,
+          cachedTokens: u.cache_read_input_tokens ?? 0,
+        },
+      };
+    }
+    // 结束用量（含输出 token）
+    if (ev.type === 'message_delta' && ev.usage) {
+      return { usage: { completionTokens: ev.usage.output_tokens ?? 0 } };
+    }
+    return null;
+  }
 }
+

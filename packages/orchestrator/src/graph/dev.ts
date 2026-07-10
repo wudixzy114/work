@@ -1,14 +1,21 @@
 import { StateGraph, START, END } from '@langchain/langgraph';
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import type { NodeState, Role } from '@aiwf/shared';
+import type { NodeState, Phase, Role } from '@aiwf/shared';
 import type { AdapterClient } from '@aiwf/adapter';
 import { OrchestratorState, type OrchestratorStateType } from '../state.js';
-import { invokeRole } from '../roles.js';
+import { invokeRoleStream } from '../roles.js';
 
 /** 节点进入时发出的真实信号（用于前端把该节点点亮为 active）。 */
 export interface ActiveSignal {
   active: Role;
 }
+
+/** 逐 token 输出信号，用于前端实时渲染当前 Agent 的输出。 */
+export interface TokenSignal {
+  token: { role: Role; delta: string };
+}
+
+export type CustomSignal = ActiveSignal | TokenSignal;
 
 /** 更新某角色节点的状态与输出，返回新的 nodes 数组（不可变更新）。 */
 function setNode(
@@ -22,22 +29,35 @@ function setNode(
   );
 }
 
-/** 节点入口发出 active 信号：这是真实的“正在进入该节点”，非乐观预测。 */
 function emitActive(config: LangGraphRunnableConfig, role: Role): void {
   config.writer?.({ active: role } satisfies ActiveSignal);
 }
 
+function emitToken(config: LangGraphRunnableConfig, role: Role, delta: string): void {
+  config.writer?.({ token: { role, delta } } satisfies TokenSignal);
+}
+
 /**
- * 开发阶段图：调研（强模型）→ 执行（执行模型）→ 审查（最强模型）。
+ * 通用三模型阶段图：调研（强模型）→ 执行（执行模型）→ 审查（最强模型）。
  * 审查不通过则回退到执行节点重做，直至通过或达到最大轮次。
+ * 各阶段通过 phase 决定专属提示词（见 prompts.ts），行为差异真实存在。
+ * 节点输出以真实流式逐 token 上报（emitToken），非乐观预测。
  */
-export function buildDevGraph(client: AdapterClient) {
+export function buildPhaseGraph(client: AdapterClient, phase: Phase) {
   const research = async (
     s: OrchestratorStateType,
     config: LangGraphRunnableConfig,
   ): Promise<Partial<OrchestratorStateType>> => {
     emitActive(config, 'research');
-    const text = await invokeRole(client, s.bindings, 'research', s.runId, s.task);
+    const text = await invokeRoleStream(
+      client,
+      s.bindings,
+      phase,
+      'research',
+      s.runId,
+      s.task,
+      (d) => emitToken(config, 'research', d),
+    );
     return {
       research: text,
       nodes: setNode(s.nodes, 'research', 'done', text),
@@ -56,7 +76,15 @@ export function buildDevGraph(client: AdapterClient) {
     ]
       .filter(Boolean)
       .join('\n\n');
-    const text = await invokeRole(client, s.bindings, 'execute', s.runId, prompt);
+    const text = await invokeRoleStream(
+      client,
+      s.bindings,
+      phase,
+      'execute',
+      s.runId,
+      prompt,
+      (d) => emitToken(config, 'execute', d),
+    );
     return {
       execution: text,
       iteration: s.iteration + 1,
@@ -70,7 +98,15 @@ export function buildDevGraph(client: AdapterClient) {
   ): Promise<Partial<OrchestratorStateType>> => {
     emitActive(config, 'review');
     const prompt = `任务：${s.task}\n\n执行成果：\n${s.execution}`;
-    const text = await invokeRole(client, s.bindings, 'review', s.runId, prompt);
+    const text = await invokeRoleStream(
+      client,
+      s.bindings,
+      phase,
+      'review',
+      s.runId,
+      prompt,
+      (d) => emitToken(config, 'review', d),
+    );
     const approved = /^\s*APPROVED/i.test(text);
     return {
       reviewNotes: text,
@@ -104,4 +140,9 @@ export function buildDevGraph(client: AdapterClient) {
       node_execute: 'node_execute',
       [END]: END,
     });
+}
+
+/** 向后兼容别名：开发阶段图。 */
+export function buildDevGraph(client: AdapterClient) {
+  return buildPhaseGraph(client, 'develop');
 }

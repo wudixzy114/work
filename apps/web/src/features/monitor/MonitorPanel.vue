@@ -17,6 +17,30 @@ const cost = computed(() => session.summary.totalCostUsd.toFixed(4));
 /** 倒序展示最近事件，最新在上。 */
 const feed = computed(() => [...session.events].reverse().slice(0, 40));
 
+/** 按模型聚合成本与 token（客户端从实时事件流计算，无需额外请求）。 */
+interface ModelStat {
+  model: string;
+  calls: number;
+  tokens: number;
+  costUsd: number;
+}
+const byModel = computed<ModelStat[]>(() => {
+  const map = new Map<string, ModelStat>();
+  for (const e of session.events) {
+    if (e.kind !== 'call_success' || !e.model) continue;
+    const stat = map.get(e.model) ?? { model: e.model, calls: 0, tokens: 0, costUsd: 0 };
+    stat.calls += 1;
+    stat.tokens += e.usage?.totalTokens ?? 0;
+    stat.costUsd += e.costUsd ?? 0;
+    map.set(e.model, stat);
+  }
+  return [...map.values()].sort((a, b) => b.tokens - a.tokens);
+});
+
+const maxTokens = computed(() =>
+  Math.max(1, ...byModel.value.map((m) => m.tokens)),
+);
+
 function kindMeta(kind: string): { tone: string; text: string } {
   switch (kind) {
     case 'call_success':
@@ -45,6 +69,27 @@ function ts(at: number): string {
       <StatReadout label="成本" :value="cost" unit="USD" />
       <StatReadout label="回退" :value="session.summary.fallbacks" tone="active" />
       <StatReadout label="错误" :value="session.summary.errors" tone="warn" />
+    </div>
+
+    <!-- 按模型成本归因 -->
+    <div v-if="byModel.length > 0" class="flex flex-col gap-1.5">
+      <span class="font-mono text-[10px] uppercase tracking-[0.2em] text-ink-faint"
+        >按模型用量</span
+      >
+      <div v-for="m in byModel" :key="m.model" class="flex flex-col gap-0.5">
+        <div class="flex items-center justify-between font-mono text-[10px]">
+          <span class="text-ink-muted">{{ m.model }}</span>
+          <span class="text-ink-faint"
+            >{{ m.tokens.toLocaleString() }} tok · ${{ m.costUsd.toFixed(4) }}</span
+          >
+        </div>
+        <div class="h-1 overflow-hidden rounded-full bg-panel-line">
+          <div
+            class="h-full rounded-full bg-flow/70"
+            :style="{ width: `${(m.tokens / maxTokens) * 100}%` }"
+          />
+        </div>
+      </div>
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col">

@@ -22,12 +22,33 @@ export const ChannelSchema = z.object({
   /** 加权负载均衡权重，越大越优先。 */
   weight: z.number().int().positive().default(1),
   enabled: z.boolean().default(true),
+  /** 单次请求超时（毫秒）。 */
+  timeoutMs: z.number().int().positive().default(60_000),
+  /** 失败重试次数（不含首次）。 */
+  maxRetries: z.number().int().nonnegative().default(2),
 });
 export type Channel = z.infer<typeof ChannelSchema>;
 
 /** 新建渠道时的输入（id 由服务端生成）。 */
 export const ChannelInputSchema = ChannelSchema.omit({ id: true });
 export type ChannelInput = z.infer<typeof ChannelInputSchema>;
+
+/**
+ * 渠道健康状态。由主动探活或调用结果实时更新，供前端显示与负载均衡决策。
+ */
+export const ChannelHealthSchema = z.object({
+  channelId: z.string(),
+  status: z.enum(['unknown', 'healthy', 'degraded', 'down']),
+  /** 最近一次探活/调用延迟（ms）。 */
+  latencyMs: z.number().nonnegative().nullable().default(null),
+  /** 熔断是否打开。 */
+  circuitOpen: z.boolean().default(false),
+  /** 连续失败次数。 */
+  consecutiveFailures: z.number().int().nonnegative().default(0),
+  lastError: z.string().nullable().default(null),
+  checkedAt: z.number().int().nonnegative(),
+});
+export type ChannelHealth = z.infer<typeof ChannelHealthSchema>;
 
 /**
  * 角色 -> 渠道 + 模型 的绑定。

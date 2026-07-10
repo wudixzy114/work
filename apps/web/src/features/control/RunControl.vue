@@ -57,6 +57,14 @@ function stop(): void {
   if (session.run) session.stopRun(session.run.runId);
 }
 
+function pause(): void {
+  if (session.run) session.pauseRun(session.run.runId);
+}
+
+function resume(): void {
+  if (session.run) session.resumeRun(session.run.runId);
+}
+
 const history = ref<CheckpointRef[]>([]);
 async function loadHistory(): Promise<void> {
   if (session.run) history.value = await runsApi.history(session.run.runId);
@@ -138,7 +146,22 @@ onMounted(async () => {
         启动运行
       </button>
       <button
+        v-if="!session.isPaused"
         :disabled="!session.isRunning"
+        class="rounded border border-panel-line px-3 py-1.5 font-mono text-xs text-ink-muted enabled:hover:border-active enabled:hover:text-active disabled:opacity-30"
+        @click="pause"
+      >
+        暂停
+      </button>
+      <button
+        v-else
+        class="rounded border border-active px-3 py-1.5 font-mono text-xs text-active hover:brightness-110"
+        @click="resume"
+      >
+        继续
+      </button>
+      <button
+        :disabled="!session.isRunning && !session.isPaused"
         class="rounded border border-warn px-3 py-1.5 font-mono text-xs text-warn disabled:opacity-30"
         @click="stop"
       >

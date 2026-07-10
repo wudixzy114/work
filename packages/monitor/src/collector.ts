@@ -1,14 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { nanoid } from 'nanoid';
 import {
+  type Budget,
+  type BudgetStatus,
+  type EventQuery,
   type MonitorEvent,
   type MonitorEventKind,
   type MonitorSummary,
   type Role,
   type Usage,
+  type UsageBreakdown,
 } from '@aiwf/shared';
 import type { AdapterHooks, CallMeta } from '@aiwf/adapter';
 import type { MonitorStore } from './store.js';
+import { breakdownByChannel, breakdownByModel } from './aggregate.js';
+import { BudgetTracker } from './budget.js';
 
 /** 已知模型每百万 token 的美元价格，用于估算真实成本。未知模型返回 null。 */
 const PRICE_PER_MTOK: Record<string, { input: number; output: number }> = {
@@ -40,11 +46,18 @@ export class MonitorCollector extends EventEmitter implements AdapterHooks {
     fallbacks: 0,
     errors: 0,
   };
+  /** 预算追踪器，未配置预算时为 null。 */
+  private budgetTracker: BudgetTracker | null = null;
 
-  constructor(store: MonitorStore, private readonly now: () => number = () => Date.now()) {
+  constructor(
+    store: MonitorStore,
+    private readonly now: () => number = () => Date.now(),
+    budget?: Budget,
+  ) {
     super();
     this.store = store;
     this.rebuildSummary();
+    if (budget) this.setBudget(budget);
   }
 
   getSummary(): MonitorSummary {
@@ -53,6 +66,38 @@ export class MonitorCollector extends EventEmitter implements AdapterHooks {
 
   recent(limit?: number): MonitorEvent[] {
     return this.store.recent(limit);
+  }
+
+  /**
+   * 按模型或渠道维度做成本细分。给定 query 时从落库事件查询，
+   * 否则退回到最近事件。
+   */
+  breakdown(dimension: 'model' | 'channel', q?: EventQuery): UsageBreakdown[] {
+    const events = q ? this.store.query(q) : this.store.recent();
+    return dimension === 'model'
+      ? breakdownByModel(events)
+      : breakdownByChannel(events);
+  }
+
+  /**
+   * 配置/更新预算。已落库事件会被重放以恢复累计开销，
+   * 保证服务重启后预算状态一致。
+   */
+  setBudget(budget: Budget): void {
+    if (this.budgetTracker) {
+      this.budgetTracker.setBudget(budget);
+    } else {
+      this.budgetTracker = new BudgetTracker(budget);
+      for (const event of this.store.recent(10_000)) {
+        this.budgetTracker.apply(event);
+      }
+    }
+    this.emit('budget', this.budgetTracker.status());
+  }
+
+  /** 当前预算状态；未配置预算时返回 null。 */
+  getBudgetStatus(): BudgetStatus | null {
+    return this.budgetTracker ? this.budgetTracker.status() : null;
   }
 
   onStart(meta: CallMeta, channelId: string, model: string): void {
@@ -122,6 +167,10 @@ export class MonitorCollector extends EventEmitter implements AdapterHooks {
     this.applyToSummary(event);
     this.emit('event', event);
     this.emit('summary', this.getSummary());
+    if (this.budgetTracker) {
+      this.budgetTracker.apply(event);
+      this.emit('budget', this.budgetTracker.status());
+    }
   }
 
   private applyToSummary(event: MonitorEvent): void {

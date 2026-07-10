@@ -52,3 +52,54 @@ export const MonitorSummarySchema = z.object({
   errors: z.number().int().nonnegative(),
 });
 export type MonitorSummary = z.infer<typeof MonitorSummarySchema>;
+
+/** 按模型/渠道维度的用量细分，用于成本归因。 */
+export const UsageBreakdownSchema = z.object({
+  /** 分组键（模型名或渠道 id）。 */
+  key: z.string(),
+  calls: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  cachedTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  errors: z.number().int().nonnegative(),
+  /** 平均延迟（ms），无数据为 null。 */
+  avgLatencyMs: z.number().nonnegative().nullable().default(null),
+});
+export type UsageBreakdown = z.infer<typeof UsageBreakdownSchema>;
+
+/** 事件查询过滤条件。 */
+export const EventQuerySchema = z.object({
+  runId: z.string().optional(),
+  channelId: z.string().optional(),
+  model: z.string().optional(),
+  kind: MonitorEventKindSchema.optional(),
+  /** epoch ms 起止。 */
+  since: z.number().int().nonnegative().optional(),
+  until: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().max(1000).default(200),
+});
+export type EventQuery = z.infer<typeof EventQuerySchema>;
+
+/** 预算与告警配置。 */
+export const BudgetSchema = z.object({
+  /** 累计成本上限（美元），null 表示不限。 */
+  maxCostUsd: z.number().positive().nullable().default(null),
+  /** 累计 token 上限，null 表示不限。 */
+  maxTokens: z.number().int().positive().nullable().default(null),
+  /** 达到上限百分比时告警（0-1）。 */
+  alertThreshold: z.number().min(0).max(1).default(0.8),
+});
+export type Budget = z.infer<typeof BudgetSchema>;
+
+/** 预算实时状态。 */
+export const BudgetStatusSchema = z.object({
+  spentUsd: z.number().nonnegative(),
+  spentTokens: z.number().int().nonnegative(),
+  costRatio: z.number().nonnegative().nullable().default(null),
+  tokenRatio: z.number().nonnegative().nullable().default(null),
+  /** 是否已触发告警阈值。 */
+  alerting: z.boolean().default(false),
+  /** 是否已超限。 */
+  exceeded: z.boolean().default(false),
+});
+export type BudgetStatus = z.infer<typeof BudgetStatusSchema>;
